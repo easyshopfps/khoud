@@ -445,6 +445,6 @@ app.put('/api/admin/settings/contacts', requireAdmin, async (req, res) => {
 });
 
 // ── Start ──────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅  Easy Store API  →  http://localhost:${PORT}`);
 });
