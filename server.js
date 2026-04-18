@@ -28,7 +28,7 @@ const SALT_ROUNDS = 12;
 
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5500',
+  origin: true,
   credentials: true,
 }));
 app.use(express.json());
