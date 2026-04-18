@@ -27,22 +27,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_IN_PRODUCTION';
 const SALT_ROUNDS = 12;
 
 app.use(helmet());
-
-// ── CORS (multi-origin) ────────────────────────────────────────────────────
-const allowedOrigins = [
-  'https://easystores.xyz',
-  'https://easyshopfps.github.io',
-  ...(process.env.FRONTEND_ORIGIN ? [process.env.FRONTEND_ORIGIN] : []),
-];
 app.use(cors({
-  origin: function (origin, callback) {
-    // allow server-to-server / curl requests (no origin header)
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5500',
   credentials: true,
 }));
 app.use(express.json());
@@ -110,7 +96,7 @@ app.post('/api/auth/register', async (req, res) => {
     { email: newUser.email, role: 'user', user_id: nextId },
     JWT_SECRET, { expiresIn: '7d' }
   );
-  res.cookie('es_token', token, { httpOnly: true, sameSite: 'Strict', maxAge: 7*24*3600*1000 });
+  res.cookie('es_token', token, { httpOnly: true, sameSite: 'None', secure: true, maxAge: 7*24*3600*1000 });
   ok(res, { token, user: { name, email: newUser.email, role: 'user', wallet: 0, user_id: nextId } });
 });
 
@@ -135,7 +121,7 @@ app.post('/api/auth/login', async (req, res) => {
     { email: user.email, role: user.role, user_id: user.user_id },
     JWT_SECRET, { expiresIn: '7d' }
   );
-  res.cookie('es_token', token, { httpOnly: true, sameSite: 'Strict', maxAge: 7*24*3600*1000 });
+  res.cookie('es_token', token, { httpOnly: true, sameSite: 'None', secure: true, maxAge: 7*24*3600*1000 });
   ok(res, {
     token,
     user: { name: user.name, email: user.email, role: user.role || 'user', wallet: user.wallet || 0, user_id: user.user_id },
