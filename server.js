@@ -27,8 +27,22 @@ const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_IN_PRODUCTION';
 const SALT_ROUNDS = 12;
 
 app.use(helmet());
+
+// ── CORS (multi-origin) ────────────────────────────────────────────────────
+const allowedOrigins = [
+  'https://easystores.xyz',
+  'https://easyshopfps.github.io',
+  ...(process.env.FRONTEND_ORIGIN ? [process.env.FRONTEND_ORIGIN] : []),
+];
 app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5500',
+  origin: function (origin, callback) {
+    // allow server-to-server / curl requests (no origin header)
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
 app.use(express.json());
