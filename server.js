@@ -429,11 +429,22 @@ app.delete('/api/admin/coupon/:id', requireAdmin, async (req, res) => {
 // ── Users (admin edit) ─────────────────────────────────────────────────────
 app.put('/api/admin/user/:email', requireAdmin, async (req, res) => {
   const update = {};
-  if (req.body.wallet !== undefined) update.wallet = req.body.wallet;
-  if (req.body.role   !== undefined) update.role   = req.body.role;
+  if (req.body.wallet   !== undefined) update.wallet = req.body.wallet;
+  if (req.body.role     !== undefined) update.role   = req.body.role;
+  if (req.body.name     !== undefined) update.name   = req.body.name;
+  if (req.body.password !== undefined) {
+    update.password_hash = await require('bcrypt').hash(req.body.password, 12);
+  }
   const { error } = await sb.from('users').update(update).eq('email', req.params.email);
   if (error) return err(res, error.message, 500);
   ok(res, { updated: true });
+});
+
+// DELETE /api/admin/user/:email
+app.delete('/api/admin/user/:email', requireAdmin, async (req, res) => {
+  const { error } = await sb.from('users').delete().eq('email', req.params.email);
+  if (error) return err(res, error.message, 500);
+  ok(res, { deleted: true });
 });
 
 // ── Settings ───────────────────────────────────────────────────────────────
