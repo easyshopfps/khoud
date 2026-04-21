@@ -14,6 +14,7 @@ const bcrypt       = require('bcrypt');
 const jwt          = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const { createClient } = require('@supabase/supabase-js');
+const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
 
 // ── Supabase (server-side only — Service Role key NEVER sent to browser) ──
 const sb = createClient(
@@ -25,6 +26,35 @@ const app        = express();
 const PORT       = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_IN_PRODUCTION';
 const SALT_ROUNDS = 12;
+// ── WonDD API Config ──────────────────────────────────────────
+const WONDD_URL  = 'https://www.wondd.com/member/bot-game.php';
+const WONDD_USER = process.env.WONDD_USERNAME || '';
+const WONDD_PASS = process.env.WONDD_PASSWORD || '';
+
+async function wonddPost(params) {
+  const body = new URLSearchParams({
+    username: WONDD_USER,
+    password: WONDD_PASS,
+    ...params,
+  });
+  const res = await fetch(WONDD_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+    timeout: 15000,
+  });
+  return res.json();
+}
+
+// WonDD servicecode map (game id -> wondd service code)
+const WONDD_SERVICE = {
+  1: 'freefire',
+  2: 'rov',
+  3: 'undawn',
+  4: 'rov',       // Honor of Kings — map to nearest or extend later
+  5: 'blackcover',
+};
+
 
 app.use(helmet());
 app.use(cors({
@@ -445,6 +475,110 @@ app.delete('/api/admin/user/:email', requireAdmin, async (req, res) => {
   const { error } = await sb.from('users').delete().eq('email', req.params.email);
   if (error) return err(res, error.message, 500);
   ok(res, { deleted: true });
+});
+
+
+// ══════════════════════════════════════════════════════════════
+//  WONDD API INTEGRATION
+// ══════════════════════════════════════════════════════════════
+
+// GET /api/wondd/packlist?game=rov
+// Fetch packcode list from WonDD (admin use to sync)
+app.get('/api/wondd/packlist', requireAdmin, async (req, res) => {
+  try {
+    const game = req.query.game || '';
+    const url  = game
+      ? `https://www.wondd.com/member/bot-game-packlist.php?game=${game}`
+      : 'https://www.wondd.com/member/bot-game-packlist.php';
+    const resp = await fetch(url, { timeout: 10000 });
+    const data = await resp.json();
+    ok(res, data);
+  } catch (e) {
+    err(res, 'WonDD packlist error: ' + e.message, 500);
+  }
+});
+
+// POST /api/wondd/balance
+// Check WonDD account balance
+app.post('/api/wondd/balance', requireAdmin, async (req, res) => {
+  try {
+    const data = await wonddPost({ method: 'balance' });
+    ok(res, data);
+  } catch (e) {
+    err(res, 'WonDD balance error: ' + e.message, 500);
+  }
+});
+
+// POST /api/wondd/topup  — called internally by doOrder
+// Body: { order_id, game_id, packcode, gameid_player, zone? }
+app.post('/api/wondd/topup', requireAuth, async (req, res) => {
+  const { order_id, game_id, packcode, gameid_player, zone } = req.body;
+  if (!order_id || !game_id || !packcode || !gameid_player)
+    return err(res, 'Missing required fields');
+
+  const servicecode = WONDD_SERVICE[game_id];
+  if (!servicecode) return err(res, 'Game not supported by WonDD auto-topup');
+
+  try {
+    const gameId = zone ? `${gameid_player}|${zone}` : gameid_player;
+    const data = await wonddPost({
+      method:      'topup',
+      servicecode: servicecode,
+      packcode:    packcode,
+      gameid:      gameId,
+      orderid:     order_id,
+    });
+
+    // data.errorcode === '00' means success
+    if (data.errorcode === '00') {
+      // Update order status to processing
+      await sb.from('orders').update({
+        status:        'processing',
+        wondd_orderid: data.orderid,
+      }).eq('id', order_id);
+      ok(res, { success: true, wondd: data });
+    } else {
+      await sb.from('orders').update({ status: 'failed' }).eq('id', order_id);
+      err(res, `WonDD Error ${data.errorcode}: ${data.errordetail}`, 400);
+    }
+  } catch (e) {
+    err(res, 'WonDD topup error: ' + e.message, 500);
+  }
+});
+
+// POST /api/wondd/checkstatus
+// Body: { order_id, wondd_orderid }
+app.post('/api/wondd/checkstatus', requireAdmin, async (req, res) => {
+  const { wondd_orderid } = req.body;
+  if (!wondd_orderid) return err(res, 'Missing wondd_orderid');
+  try {
+    const data = await wonddPost({
+      method:  'checkstatus',
+      orderid: wondd_orderid,
+    });
+    ok(res, data);
+  } catch (e) {
+    err(res, 'WonDD checkstatus error: ' + e.message, 500);
+  }
+});
+
+// POST /api/wondd/callback  — WonDD posts back here on status change
+app.post('/api/wondd/callback', async (req, res) => {
+  const { orderid, status, remark } = req.body;
+  if (!orderid) return res.sendStatus(400);
+
+  const statusMap = {
+    complete: 'success',
+    process:  'processing',
+    fail:     'failed',
+  };
+  const newStatus = statusMap[status] || 'processing';
+
+  await sb.from('orders')
+    .update({ status: newStatus, wondd_remark: remark || '' })
+    .eq('wondd_orderid', orderid);
+
+  res.sendStatus(200);
 });
 
 // ── Settings ───────────────────────────────────────────────────────────────
