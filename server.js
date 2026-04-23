@@ -287,7 +287,7 @@ app.post('/api/order/create', requireAuth, async (req, res) => {
     discount, total: String(total),
     uid_game, zone: zone || '', pay: pay || '',
     status: 'pending',
-    time: new Date().toLocaleString('lo-LA'),
+    time: new Date().toLocaleString('lo-LA', { timeZone: 'Asia/Bangkok' }),
     userId: req.user.email,
     discCode: coupon_code || '',
   };
