@@ -288,8 +288,8 @@ app.post('/api/order/create', requireAuth, async (req, res) => {
     uid_game, zone: zone || '', pay: pay || '',
     status: 'pending',
     time: new Date().toLocaleString('lo-LA'),
-    user_email: req.user.email,
-    disc_code: coupon_code || '',
+    userId: req.user.email,
+    discCode: coupon_code || '',
   };
 
   const { error: oErr } = await sb.from('orders').insert(ord);
