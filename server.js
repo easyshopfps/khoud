@@ -348,6 +348,16 @@ app.get('/api/admin/orders', requireAdmin, async (req, res) => {
   ok(res, data || []);
 });
 
+// GET /api/user/orders — orders ຂອງ user ທີ່ login ຢູ່
+app.get('/api/user/orders', requireAuth, async (req, res) => {
+  const { data, error } = await sb.from('orders')
+    .select('*')
+    .eq('userId', req.user.email)
+    .order('time', { ascending: false });
+  if (error) return err(res, error.message, 500);
+  ok(res, data || []);
+});
+
 // GET /api/admin/users
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   const { data, error } = await sb.from('users').select('name, email, role, wallet, user_id, joined');
