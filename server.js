@@ -538,10 +538,34 @@ app.post('/api/wondd/topup', requireAuth, async (req, res) => {
       }).eq('id', order_id);
       ok(res, { success: true, wondd: data });
     } else {
+      // ── WonDD rejected → mark failed + auto refund ──────────
       await sb.from('orders').update({ status: 'failed' }).eq('id', order_id);
-      err(res, `WonDD Error ${data.errorcode}: ${data.errordetail}`, 400);
+
+      // Refund wallet: get order total then add back to user
+      const { data: ord } = await sb.from('orders').select('total,userId').eq('id', order_id).maybeSingle();
+      if (ord) {
+        const refundAmt = parseInt(ord.total) || 0;
+        const { data: u } = await sb.from('users').select('wallet').eq('email', ord.userId).maybeSingle();
+        if (u && refundAmt > 0) {
+          await sb.from('users').update({ wallet: (u.wallet || 0) + refundAmt }).eq('email', ord.userId);
+        }
+      }
+
+      err(res, `ເຕີມບໍ່ສຳເລັດ (${data.errorcode}): ${data.errordetail}`, 400);
     }
   } catch (e) {
+    // Network/timeout error → also refund
+    try {
+      const { data: ord } = await sb.from('orders').select('total,userId').eq('id', order_id).maybeSingle();
+      if (ord) {
+        await sb.from('orders').update({ status: 'failed' }).eq('id', order_id);
+        const refundAmt = parseInt(ord.total) || 0;
+        const { data: u } = await sb.from('users').select('wallet').eq('email', ord.userId).maybeSingle();
+        if (u && refundAmt > 0) {
+          await sb.from('users').update({ wallet: (u.wallet || 0) + refundAmt }).eq('email', ord.userId);
+        }
+      }
+    } catch (_) {}
     err(res, 'WonDD topup error: ' + e.message, 500);
   }
 });
