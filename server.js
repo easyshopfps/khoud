@@ -450,10 +450,16 @@ app.delete('/api/admin/popup/:id', requireAdmin, async (req, res) => {
 });
 
 // ── Coupons ────────────────────────────────────────────────────────────────
-app.post('/api/admin/coupon', requireAdmin, async (req, res) => {
-  const { error } = await sb.from('coupons').insert(req.body);
+// GET /api/admin/coupons
+app.get('/api/admin/coupons', requireAdmin, async (req, res) => {
+  const { data, error } = await sb.from('coupons').select('*').order('id', { ascending: false });
   if (error) return err(res, error.message, 500);
-  ok(res, { created: true });
+  ok(res, data || []);
+});
+app.post('/api/admin/coupon', requireAdmin, async (req, res) => {
+  const { data, error } = await sb.from('coupons').insert(req.body).select().single();
+  if (error) return err(res, error.message, 500);
+  ok(res, data);
 });
 app.put('/api/admin/coupon/:id', requireAdmin, async (req, res) => {
   const { error } = await sb.from('coupons').update(req.body).eq('id', req.params.id);
