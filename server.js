@@ -180,13 +180,14 @@ app.get('/api/user/profile', requireAuth, async (req, res) => {
 // GET /api/store/init
 app.get('/api/store/init', async (req, res) => {
   try {
-    const [gRes, pkRes, banRes, pupRes, ctRes, cpRes] = await Promise.all([
+    const [gRes, pkRes, banRes, pupRes, ctRes, cpRes, promoRes] = await Promise.all([
       sb.from('games').select('*').order('id'),
       sb.from('packages').select('*').order('id'),
       sb.from('banners').select('*').order('id'),
       sb.from('popups').select('*').order('order'),
       sb.from('settings').select('value').eq('key', 'contacts').maybeSingle(),
       sb.from('coupons').select('id, code, type, value, active, maxUses'), // no usedBy
+      sb.from('promos').select('*').order('id'),
     ]);
     ok(res, {
       games:    gRes.data   || [],
@@ -195,6 +196,7 @@ app.get('/api/store/init', async (req, res) => {
       popups:   pupRes.data || [],
       contacts: ctRes.data?.value || { fb: '', tt: '', wa: '' },
       coupons:  cpRes.data  || [],
+      promos:   promoRes.data || [],
     });
   } catch (e) {
     err(res, 'Server error: ' + e.message, 500);
@@ -468,6 +470,50 @@ app.put('/api/admin/coupon/:id', requireAdmin, async (req, res) => {
 });
 app.delete('/api/admin/coupon/:id', requireAdmin, async (req, res) => {
   const { error } = await sb.from('coupons').delete().eq('id', req.params.id);
+  if (error) return err(res, error.message, 500);
+  ok(res, { deleted: true });
+});
+
+// ── Promos ────────────────────────────────────────────────────────────────────
+app.get('/api/admin/promos', requireAdmin, async (req, res) => {
+  const { data, error } = await sb.from('promos').select('*').order('id');
+  if (error) return err(res, error.message, 500);
+  ok(res, data || []);
+});
+app.post('/api/admin/promo', requireAdmin, async (req, res) => {
+  const { data, error } = await sb.from('promos').insert(req.body).select().single();
+  if (error) return err(res, error.message, 500);
+  ok(res, data);
+});
+app.put('/api/admin/promo/:id', requireAdmin, async (req, res) => {
+  const { error } = await sb.from('promos').update(req.body).eq('id', req.params.id);
+  if (error) return err(res, error.message, 500);
+  ok(res, { updated: true });
+});
+app.delete('/api/admin/promo/:id', requireAdmin, async (req, res) => {
+  const { error } = await sb.from('promos').delete().eq('id', req.params.id);
+  if (error) return err(res, error.message, 500);
+  ok(res, { deleted: true });
+});
+
+// ── Promos (admin CRUD) ──────────────────────────────────────────────────────
+app.get('/api/admin/promos', requireAdmin, async (req, res) => {
+  const { data, error } = await sb.from('promos').select('*').order('id', { ascending: false });
+  if (error) return err(res, error.message, 500);
+  ok(res, data || []);
+});
+app.post('/api/admin/promo', requireAdmin, async (req, res) => {
+  const { data, error } = await sb.from('promos').insert(req.body).select().single();
+  if (error) return err(res, error.message, 500);
+  ok(res, data);
+});
+app.put('/api/admin/promo/:id', requireAdmin, async (req, res) => {
+  const { error } = await sb.from('promos').update(req.body).eq('id', req.params.id);
+  if (error) return err(res, error.message, 500);
+  ok(res, { updated: true });
+});
+app.delete('/api/admin/promo/:id', requireAdmin, async (req, res) => {
+  const { error } = await sb.from('promos').delete().eq('id', req.params.id);
   if (error) return err(res, error.message, 500);
   ok(res, { deleted: true });
 });
