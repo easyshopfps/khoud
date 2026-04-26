@@ -16,6 +16,26 @@ const cookieParser = require('cookie-parser');
 const { createClient } = require('@supabase/supabase-js');
 const fetch = (...args) => import('node-fetch').then(({default: f}) => f(...args));
 
+// ── In-memory locks (กัน race condition) ─────────────────────────────────
+const _locks = new Map();
+async function withLock(key, fn) {
+  while (_locks.get(key)) await new Promise(r => setTimeout(r, 20));
+  _locks.set(key, true);
+  try { return await fn(); } finally { _locks.delete(key); }
+}
+
+// ── Simple rate limiter ───────────────────────────────────────────────────
+const _ratemap = new Map();
+function rateLimit(key, maxPerMin) {
+  const now = Date.now();
+  const hits = (_ratemap.get(key) || []).filter(t => now - t < 60000);
+  hits.push(now);
+  _ratemap.set(key, hits);
+  return hits.length > maxPerMin;
+}
+// cleanup ทุก 5 นาที
+setInterval(() => { const now=Date.now(); _ratemap.forEach((v,k)=>{ if(!v.some(t=>now-t<60000))_ratemap.delete(k); }); }, 300000);
+
 // ── Supabase (server-side only — Service Role key NEVER sent to browser) ──
 const sb = createClient(
   process.env.SUPABASE_URL,
@@ -57,8 +77,12 @@ const WONDD_SERVICE = {
 
 
 app.use(helmet());
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://easystores.xyz').split(',');
 app.use(cors({
-  origin: true,
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.some(o => origin.startsWith(o.trim()))) cb(null, true);
+    else cb(new Error('Not allowed by CORS'));
+  },
   credentials: true,
 }));
 app.use(express.json());
@@ -99,6 +123,8 @@ function requireAdmin(req, res, next) {
 
 // POST /api/auth/register
 app.post('/api/auth/register', async (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  if (rateLimit('register:' + ip, 5)) return err(res, 'ລອງໃໝ່ພາຍຫຼັງ', 429);
   const { name, email, password } = req.body;
   if (!name || name.length < 5)         return err(res, 'ຊື່ຕ້ອງມີ 5 ຕົວຂຶ້ນໄປ');
   if (!email || !email.endsWith('@gmail.com')) return err(res, 'ຕ້ອງໃຊ້ @gmail.com');
@@ -136,6 +162,8 @@ app.post('/api/auth/register', async (req, res) => {
 
 // POST /api/auth/login
 app.post('/api/auth/login', async (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  if (rateLimit('login:' + ip, 10)) return err(res, 'ລອງໃໝ່ພາຍຫຼັງ', 429);
   const { identifier, password } = req.body;
   if (!identifier || !password) return err(res, 'ກະລຸນາຕື່ມ');
 
@@ -272,19 +300,23 @@ app.post('/api/order/create', requireAuth, async (req, res) => {
 
   const total = Math.max(0, base - discount);
 
-  // Check & deduct wallet (server-side only)
-  const { data: userData } = await sb
-    .from('users').select('wallet').eq('email', req.user.email).maybeSingle();
-  if (!userData) return err(res, 'User not found', 404);
-
-  const currentWallet = userData.wallet || 0;
-  if (currentWallet < total) return err(res, 'insufficient_funds: ຍອດເງິນບໍ່ພໍ');
-
-  const newWallet = currentWallet - total;
-
-  const { error: wErr } = await sb
-    .from('users').update({ wallet: newWallet }).eq('email', req.user.email);
-  if (wErr) return err(res, 'Wallet update failed', 500);
+  // Check & deduct wallet — ใช้ lock กัน double-spend
+  const walletLockKey = 'wallet:' + req.user.email;
+  let currentWallet, newWallet;
+  const lockResult = await withLock(walletLockKey, async () => {
+    const { data: userData } = await sb
+      .from('users').select('wallet').eq('email', req.user.email).maybeSingle();
+    if (!userData) return { error: 'User not found' };
+    const cur = userData.wallet || 0;
+    if (cur < total) return { error: 'insufficient_funds: ຍອດເງິນບໍ່ພໍ' };
+    const { error: wErr } = await sb
+      .from('users').update({ wallet: cur - total }).eq('email', req.user.email);
+    if (wErr) return { error: 'Wallet update failed' };
+    return { currentWallet: cur, newWallet: cur - total };
+  });
+  if (lockResult.error) return err(res, lockResult.error, lockResult.error.includes('insufficient') ? 400 : 500);
+  currentWallet = lockResult.currentWallet;
+  newWallet = lockResult.newWallet;
 
   const ord = {
     id: 'ES' + Date.now(),
@@ -505,18 +537,32 @@ app.delete('/api/admin/promo/:id', requireAdmin, async (req, res) => {
 app.post('/api/topup-code/redeem', requireAuth, async (req, res) => {
   const { code } = req.body;
   if (!code) return err(res, 'ກະລຸນາໃສ່ໂຄ້ດ');
-  const { data: tc, error } = await sb.from('topup_codes').select('*').eq('code', code.toUpperCase()).maybeSingle();
-  if (error || !tc) return err(res, 'ໂຄ້ດບໍ່ຖືກຕ້ອງ');
-  if (!tc.active) return err(res, 'ໂຄ້ດນີ້ຖືກປິດໃຊ້ງານແລ້ວ');
-  const usedBy = tc.used_by || [];
-  if (usedBy.includes(req.user.email)) return err(res, 'ທ່ານໃຊ້ໂຄ້ດນີ້ແລ້ວ');
-  if (tc.max_uses > 0 && usedBy.length >= tc.max_uses) return err(res, 'ໂຄ້ດໝົດໂຄວຕ້າແລ້ວ');
-  // mark used
-  await sb.from('topup_codes').update({ used_by: [...usedBy, req.user.email] }).eq('id', tc.id);
-  // add wallet
-  const { data: u } = await sb.from('users').select('wallet').eq('email', req.user.email).maybeSingle();
-  await sb.from('users').update({ wallet: (u?.wallet || 0) + tc.amount }).eq('email', req.user.email);
-  ok(res, { amount: tc.amount });
+  const codeKey = 'topup:' + code.toUpperCase();
+  const userKey = 'topup_user:' + req.user.email;
+  if (rateLimit(userKey, 5)) return err(res, 'ລອງໃໝ່ພາຍຫຼັງ', 429);
+
+  try {
+    const result = await withLock(codeKey, async () => {
+      const { data: tc, error } = await sb.from('topup_codes').select('*').eq('code', code.toUpperCase()).maybeSingle();
+      if (error || !tc) return { error: 'ໂຄ້ດບໍ່ຖືກຕ້ອງ' };
+      if (!tc.active) return { error: 'ໂຄ້ດນີ້ຖືກປິດໃຊ້ງານແລ້ວ' };
+      const usedBy = tc.used_by || [];
+      if (usedBy.includes(req.user.email)) return { error: 'ທ່ານໃຊ້ໂຄ້ດນີ້ແລ້ວ' };
+      if (tc.max_uses > 0 && usedBy.length >= tc.max_uses) return { error: 'ໂຄ້ດໝົດໂຄວຕ້າແລ້ວ' };
+      // atomic: mark used first
+      const newUsed = [...usedBy, req.user.email];
+      const { error: ue } = await sb.from('topup_codes').update({ used_by: newUsed }).eq('id', tc.id);
+      if (ue) return { error: 'ເກີດຂໍ້ຜິດພາດ' };
+      // add wallet
+      const { data: u } = await sb.from('users').select('wallet').eq('email', req.user.email).maybeSingle();
+      await sb.from('users').update({ wallet: (u?.wallet || 0) + tc.amount }).eq('email', req.user.email);
+      return { amount: tc.amount };
+    });
+    if (result.error) return err(res, result.error);
+    ok(res, { amount: result.amount });
+  } catch(e) {
+    err(res, 'ເກີດຂໍ້ຜິດພາດ', 500);
+  }
 });
 // Admin CRUD
 app.get('/api/admin/topup-codes', requireAdmin, async (req, res) => {
@@ -565,12 +611,25 @@ app.delete('/api/admin/promo/:id', requireAdmin, async (req, res) => {
 // ── Users (admin edit) ─────────────────────────────────────────────────────
 app.put('/api/admin/user/:email', requireAdmin, async (req, res) => {
   const update = {};
-  if (req.body.wallet   !== undefined) update.wallet = req.body.wallet;
-  if (req.body.role     !== undefined) update.role   = req.body.role;
-  if (req.body.name     !== undefined) update.name   = req.body.name;
+  if (req.body.wallet !== undefined) {
+    const w = parseInt(req.body.wallet);
+    if (isNaN(w) || w < 0 || w > 1_000_000_000) return err(res, 'ຈຳນວນເງິນບໍ່ຖືກຕ້ອງ');
+    update.wallet = w;
+  }
+  if (req.body.role !== undefined) {
+    if (!['user','admin'].includes(req.body.role)) return err(res, 'Role ບໍ່ຖືກຕ້ອງ');
+    update.role = req.body.role;
+  }
+  if (req.body.name !== undefined) {
+    const n = String(req.body.name).trim();
+    if (n.length < 2 || n.length > 30) return err(res, 'ຊື່ຕ້ອງ 2-30 ຕົວອັກສອນ');
+    update.name = n;
+  }
   if (req.body.password !== undefined) {
+    if (String(req.body.password).length < 6) return err(res, 'ລະຫັດ 6 ຕົວຂຶ້ນໄປ');
     update.password_hash = await require('bcrypt').hash(req.body.password, 12);
   }
+  if (!Object.keys(update).length) return err(res, 'ບໍ່ມີຂໍ້ມູນທີ່ຈະອັບເດດ');
   const { error } = await sb.from('users').update(update).eq('email', req.params.email);
   if (error) return err(res, error.message, 500);
   ok(res, { updated: true });
