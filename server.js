@@ -104,9 +104,13 @@ app.post('/api/auth/register', async (req, res) => {
   if (!email || !email.endsWith('@gmail.com')) return err(res, 'ຕ້ອງໃຊ້ @gmail.com');
   if (!password || password.length < 6) return err(res, 'ລະຫັດ 6 ຕົວຂຶ້ນໄປ');
 
-  const { data: exist } = await sb
+  const { data: existEmail } = await sb
     .from('users').select('email').eq('email', email.toLowerCase()).maybeSingle();
-  if (exist) return err(res, 'email_exists: ຖືກໃຊ້ແລ້ວ');
+  if (existEmail) return err(res, 'email_exists: ອີເມລນີ້ຖືກໃຊ້ແລ້ວ');
+
+  const { data: existName } = await sb
+    .from('users').select('name').eq('name', name.trim()).maybeSingle();
+  if (existName) return err(res, 'name_exists: ຊື່ນີ້ຖືກໃຊ້ແລ້ວ ກະລຸນາເລືອກຊື່ໃໝ່');
 
   const { data: last } = await sb
     .from('users').select('user_id').order('user_id', { ascending: false }).limit(1);
@@ -492,6 +496,46 @@ app.put('/api/admin/promo/:id', requireAdmin, async (req, res) => {
 });
 app.delete('/api/admin/promo/:id', requireAdmin, async (req, res) => {
   const { error } = await sb.from('promos').delete().eq('id', req.params.id);
+  if (error) return err(res, error.message, 500);
+  ok(res, { deleted: true });
+});
+
+// ── Topup Codes ──────────────────────────────────────────────────────────────
+// Redeem
+app.post('/api/topup-code/redeem', requireAuth, async (req, res) => {
+  const { code } = req.body;
+  if (!code) return err(res, 'ກະລຸນາໃສ່ໂຄ້ດ');
+  const { data: tc, error } = await sb.from('topup_codes').select('*').eq('code', code.toUpperCase()).maybeSingle();
+  if (error || !tc) return err(res, 'ໂຄ້ດບໍ່ຖືກຕ້ອງ');
+  if (!tc.active) return err(res, 'ໂຄ້ດນີ້ຖືກປິດໃຊ້ງານແລ້ວ');
+  const usedBy = tc.used_by || [];
+  if (usedBy.includes(req.user.email)) return err(res, 'ທ່ານໃຊ້ໂຄ້ດນີ້ແລ້ວ');
+  if (tc.max_uses > 0 && usedBy.length >= tc.max_uses) return err(res, 'ໂຄ້ດໝົດໂຄວຕ້າແລ້ວ');
+  // mark used
+  await sb.from('topup_codes').update({ used_by: [...usedBy, req.user.email] }).eq('id', tc.id);
+  // add wallet
+  const { data: u } = await sb.from('users').select('wallet').eq('email', req.user.email).maybeSingle();
+  await sb.from('users').update({ wallet: (u?.wallet || 0) + tc.amount }).eq('email', req.user.email);
+  ok(res, { amount: tc.amount });
+});
+// Admin CRUD
+app.get('/api/admin/topup-codes', requireAdmin, async (req, res) => {
+  const { data, error } = await sb.from('topup_codes').select('*').order('id', { ascending: false });
+  if (error) return err(res, error.message, 500);
+  ok(res, data || []);
+});
+app.post('/api/admin/topup-code', requireAdmin, async (req, res) => {
+  const { data, error } = await sb.from('topup_codes').insert(req.body).select().single();
+  if (error) return err(res, error.message, 500);
+  ok(res, data);
+});
+app.put('/api/admin/topup-code/:id', requireAdmin, async (req, res) => {
+  const { error } = await sb.from('topup_codes').update(req.body).eq('id', req.params.id);
+  if (error) return err(res, error.message, 500);
+  ok(res, { updated: true });
+});
+app.delete('/api/admin/topup-code/:id', requireAdmin, async (req, res) => {
+  const { error } = await sb.from('topup_codes').delete().eq('id', req.params.id);
   if (error) return err(res, error.message, 500);
   ok(res, { deleted: true });
 });
